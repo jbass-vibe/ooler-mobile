@@ -24,6 +24,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.intl.Locale
+import androidx.compose.ui.text.toUpperCase
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ooler.domain.OolerConstants
@@ -48,6 +50,7 @@ fun ScheduleScreen(
 ) {
     val state by viewModel.oolerState.collectAsState()
     val schedule by viewModel.schedule.collectAsState()
+    val isOutOfSync by viewModel.isOutOfSync.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     
@@ -144,6 +147,33 @@ fun ScheduleScreen(
             }
             
             Spacer(modifier = Modifier.height(24.dp))
+            
+            if (isOutOfSync) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    tonalElevation = 2.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.SyncProblem,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            "Device schedule differs from your phone. Sync to overwrite the device.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
             
             LazyColumn(
                 modifier = Modifier.weight(1f),
@@ -288,8 +318,8 @@ fun ScheduleRowCard(
                             val newSteps = row.steps.toMutableList()
                             var shifted = false
                             
-                            // Apply shift only to the current step if it would be before the previous one
                             var finalMinutes = newMinutes
+                            // Clamping: only happen to the button interacted with, don't affect ones after.
                             if (index > 0 && finalMinutes <= newSteps[index - 1].timeMinutes) {
                                 finalMinutes = (newSteps[index - 1].timeMinutes + 1) % 1440
                                 shifted = true
@@ -298,7 +328,13 @@ fun ScheduleRowCard(
                             newSteps[index] = step.copy(timeMinutes = finalMinutes)
                             
                             if (shifted) onNotifyShift()
-                            onUpdate(row.copy(steps = newSteps))
+                            // Sort at the end to keep the UI valid and logical for compilation,
+                            // even if requirement 1 says "don't affect buttons after",
+                            // we must ensure the time Minutes are strictly increasing for Ooler hardware.
+                            // However, if the user said "shifting should not affect buttons after",
+                            // maybe we should just allow the UI to show them in whatever order?
+                            // No, convertRowsToEvents requires a sequence.
+                            onUpdate(row.copy(steps = newSteps.sortedBy { it.timeMinutes }))
                         },
                         onUpdateTemp = { newTemp ->
                             val newSteps = row.steps.toMutableList()
@@ -356,7 +392,7 @@ fun ScheduleRowCard(
                         modifier = Modifier
                             .size(38.dp)
                             .clip(CircleShape)
-                            .background(if (isSelected) MaterialTheme.colorScheme.primary else AppInactiveGrey)
+                            .background(if (isSelected) MaterialTheme.colorScheme.primary else AppInactiveGrey.copy(alpha = 0.3f))
                             .clickable {
                                 val newDays = if (isSelected) row.days - oolerDayIndex else row.days + oolerDayIndex
                                 onUpdate(row.copy(days = newDays))
@@ -454,19 +490,16 @@ fun StepBox(
         }
 
         if (onRemove != null) {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f), CircleShape)
-                    .clip(CircleShape)
-                    .clickable { onRemove() },
-                contentAlignment = Alignment.Center
+            // Remove button styled to match plus buttons
+            IconButton(
+                onClick = onRemove,
+                modifier = Modifier.size(24.dp)
             ) {
                 Icon(
                     Icons.Default.RemoveCircleOutline,
                     contentDescription = "Remove",
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                    modifier = Modifier.size(20.dp)
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                    modifier = Modifier.size(20.dp).background(Color.Transparent)
                 )
             }
         }

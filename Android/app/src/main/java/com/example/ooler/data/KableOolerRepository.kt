@@ -22,6 +22,9 @@ class KableOolerRepository(
     private val _schedule = MutableStateFlow(OolerSchedule())
     override val schedule: Flow<OolerSchedule> = _schedule.asStateFlow()
 
+    private val _deviceSchedule = MutableStateFlow(OolerSchedule())
+    override val deviceSchedule: Flow<OolerSchedule> = _deviceSchedule.asStateFlow()
+
     private var peripheral: Peripheral? = null
     private var scanner = Scanner {
         // No filters for discovery debugging
@@ -168,7 +171,7 @@ class KableOolerRepository(
             if (temp == 0xFF) break
             events.add(ScheduleEvent(minute, temp))
         }
-        _schedule.value = OolerSchedule(events)
+        _deviceSchedule.value = OolerSchedule(events)
     }
 
     private fun subscribeToNotifications(p: Peripheral) {
@@ -282,9 +285,15 @@ class KableOolerRepository(
     override suspend fun syncClock() {
         val now = LocalDateTime.now()
         val zone = ZoneId.systemDefault()
-        val offset = zone.rules.getOffset(now)
+        val zonedDateTime = now.atZone(zone)
+        val offset = zonedDateTime.offset
         val offsetMinutes = offset.totalSeconds / 60
         val tzOffset15 = (offsetMinutes / 15).toByte()
+
+        // Detect actual DST status
+        val isDst = zone.rules.isDaylightSavings(zonedDateTime.toInstant())
+        // 0 = Standard Time, 4 = Daylight Time (+1h)
+        val dstFlag: Byte = if (isDst) 4 else 0
 
         val dayOfWeek = now.dayOfWeek.value // 1 (Mon) to 7 (Sun)
         
@@ -300,10 +309,12 @@ class KableOolerRepository(
             .put(1.toByte()) // reason: manual update
             .array()
 
-        val localTimeInfo = byteArrayOf(tzOffset15, 0) // 0 = no DST offset for simplicity, or decode it
+        val localTimeInfo = byteArrayOf(tzOffset15, dstFlag)
 
         writeWithRetry(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.CURRENT_TIME, currentTime)
         writeWithRetry(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.LOCAL_TIME_INFO, localTimeInfo)
+        
+        Log.d("OolerRepo", "Synced clock: $now, Offset: $tzOffset15 (15m units), DST: $isDst")
     }
 
     private suspend fun writeWithRetry(service: UUID, characteristic: UUID, data: ByteArray) {

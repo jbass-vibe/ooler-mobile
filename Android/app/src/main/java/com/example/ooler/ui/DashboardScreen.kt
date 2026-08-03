@@ -1,7 +1,6 @@
 package com.example.ooler.ui
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -76,45 +75,98 @@ fun DashboardScreen(viewModel: OolerViewModel) {
                 .padding(horizontal = 24.dp)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Hero Temperature Display
-            Box(
-                modifier = Modifier
-                    .padding(vertical = 32.dp)
-                    .size(240.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f))
-                    .padding(2.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.background),
-                contentAlignment = Alignment.Center
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Compact Hero Pill: Layered Rows
+            Surface(
+                shape = RoundedCornerShape(32.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                modifier = Modifier.fillMaxWidth().wrapContentHeight()
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    modifier = Modifier.padding(vertical = 20.dp, horizontal = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Row 1: Current Temperature
                     Text(
                         text = "CURRENT",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
                     )
-                    Row(verticalAlignment = Alignment.Top) {
+                    Row(verticalAlignment = Alignment.Bottom) {
                         Text(
                             text = "$actualTemp",
                             style = MaterialTheme.typography.displayLarge.copy(
-                                fontSize = 80.sp,
-                                fontWeight = FontWeight.Light
+                                fontSize = 72.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         )
                         Text(
                             text = unitString,
                             style = MaterialTheme.typography.headlineMedium,
-                            modifier = Modifier.padding(top = 12.dp)
+                            modifier = Modifier.padding(bottom = 12.dp, start = 4.dp)
                         )
                     }
-                    Text(
-                        text = "Target: $setTemp$unitString",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp).width(200.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
                     )
+
+                    // Row 2: Target Temperature + Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilledTonalIconButton(
+                            onClick = { viewModel.setTemperature(state.setTemperatureF - 1) },
+                            modifier = Modifier.size(48.dp),
+                            shape = CircleShape
+                        ) {
+                            Icon(Icons.Default.Remove, contentDescription = "Decrease", modifier = Modifier.size(20.dp))
+                        }
+
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "TARGET",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                Text(
+                                    text = "$setTemp",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontSize = 32.sp,
+                                        fontWeight = FontWeight.Light,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                )
+                                Text(
+                                    text = unitString,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 4.dp, start = 2.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        FilledTonalIconButton(
+                            onClick = { viewModel.setTemperature(state.setTemperatureF + 1) },
+                            modifier = Modifier.size(48.dp),
+                            shape = CircleShape
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Increase", modifier = Modifier.size(20.dp))
+                        }
+                    }
                 }
             }
 
@@ -187,72 +239,30 @@ fun DashboardScreen(viewModel: OolerViewModel) {
                 }
             }
 
-            // Temperature Adjustment Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp)
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Text("Set Temperature", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
-                    val range = if (state.displayUnit == TemperatureUnit.CELSIUS) 13f..46f else 55f..115f
-                    Slider(
-                        value = setTemp.coerceIn(range.start.toInt(), range.endInclusive.toInt()).toFloat(),
-                        onValueChange = { viewModel.setTemperature(it.toInt()) },
-                        valueRange = range,
-                        colors = SliderDefaults.colors(
-                            thumbColor = MaterialTheme.colorScheme.primary,
-                            activeTrackColor = MaterialTheme.colorScheme.primary,
-                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    )
-                    
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        FilledTonalIconButton(
-                            onClick = { viewModel.setTemperature(setTemp - 1) },
-                            modifier = Modifier.size(56.dp)
-                        ) {
-                            Icon(Icons.Default.Remove, contentDescription = "Decrease")
-                        }
-                        FilledTonalIconButton(
-                            onClick = { viewModel.setTemperature(setTemp + 1) },
-                            modifier = Modifier.size(56.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Increase")
-                        }
-                    }
-                }
-            }
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Telemetry Grid
+            // Unified telemetry row centered
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                TelemetryCard(
+                CompactTelemetryCard(
                     label = "Ambient",
-                    value = if (state.ambientTemperatureF == 129) "N/A" else "$ambientTemp$unitString",
-                    icon = Icons.Default.Air,
-                    modifier = Modifier.weight(1f)
+                    value = if (state.ambientTemperatureF == 129) "--" else "$ambientTemp$unitString",
+                    icon = Icons.Default.Air
                 )
-                TelemetryCard(
+                CompactTelemetryCard(
                     label = "Humidity",
-                    value = if (state.humidity == 129) "N/A" else "${state.humidity}%",
-                    icon = Icons.Default.WaterDrop,
-                    modifier = Modifier.weight(1f)
+                    value = if (state.humidity == 129) "--" else "${state.humidity}%",
+                    icon = Icons.Default.WaterDrop
+                )
+                CompactTelemetryCard(
+                    label = "Water",
+                    value = "${state.waterLevel}%",
+                    icon = Icons.Default.Waves
                 )
             }
-
-            TelemetryCard(
-                label = "Water Level",
-                value = "${state.waterLevel}%",
-                icon = Icons.Default.Waves,
-                modifier = Modifier.fillMaxWidth()
-            )
             
             Spacer(modifier = Modifier.height(32.dp))
         }
@@ -260,27 +270,25 @@ fun DashboardScreen(viewModel: OolerViewModel) {
 }
 
 @Composable
-fun TelemetryCard(
+fun CompactTelemetryCard(
     label: String,
     value: String,
     icon: ImageVector,
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+    Column(
+        modifier = modifier.width(100.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
-            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        }
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(24.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
     }
 }

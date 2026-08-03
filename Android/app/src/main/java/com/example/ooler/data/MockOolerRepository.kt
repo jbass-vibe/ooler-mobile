@@ -49,6 +49,9 @@ class MockOolerRepository : OolerRepository {
     )
     override val schedule: Flow<OolerSchedule> = _schedule.asStateFlow()
 
+    private val _deviceSchedule = MutableStateFlow(OolerSchedule())
+    override val deviceSchedule: Flow<OolerSchedule> = _deviceSchedule.asStateFlow()
+
     override suspend fun connect() {
         delay(500)
         _oolerState.update { it.copy(isConnected = true) }

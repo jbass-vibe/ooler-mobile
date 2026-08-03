@@ -19,9 +19,8 @@ class OolerViewModel @Inject constructor(
     private val _hasPendingChanges = MutableStateFlow(false)
     val hasPendingChanges: StateFlow<Boolean> = _hasPendingChanges.asStateFlow()
 
-    init {
-        loadSavedSchedule()
-    }
+    private val _isOutOfSync = MutableStateFlow(false)
+    val isOutOfSync: StateFlow<Boolean> = _isOutOfSync.asStateFlow()
 
     val oolerState: StateFlow<OolerState> = repository.oolerState
         .stateIn(
@@ -36,6 +35,28 @@ class OolerViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = OolerSchedule()
         )
+
+    init {
+        loadSavedSchedule()
+        observeDeviceSync()
+    }
+
+    private fun observeDeviceSync() {
+        combine(schedule, repository.deviceSchedule) { local, device ->
+            if (device.events.isEmpty()) return@combine false
+            val localEvents = convertRowsToEvents(local.rows)
+            !areSchedulesEquivalent(localEvents, device.events)
+        }.onEach { outOfSync ->
+            _isOutOfSync.value = outOfSync
+        }.launchIn(viewModelScope)
+    }
+
+    private fun areSchedulesEquivalent(local: List<ScheduleEvent>, device: List<ScheduleEvent>): Boolean {
+        if (local.size != device.size) return false
+        return local.zip(device).all { (l, d) ->
+            l.minuteOfWeek == d.minuteOfWeek && l.temperatureF == d.temperatureF
+        }
+    }
 
     fun onScheduleChanged() {
         _hasPendingChanges.value = true

@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 interface OolerRepository {
     val oolerState: Flow<OolerState>
     val schedule: Flow<OolerSchedule>
+    val deviceSchedule: Flow<OolerSchedule>
 
     suspend fun connect()
     suspend fun disconnect()
