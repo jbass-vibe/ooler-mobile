@@ -24,8 +24,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.intl.Locale
-import androidx.compose.ui.text.toUpperCase
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ooler.domain.OolerConstants
@@ -34,10 +32,11 @@ import com.example.ooler.domain.ScheduleRow
 import com.example.ooler.domain.ScheduleStep
 import java.time.format.DateTimeFormatter
 import java.util.*
+import kotlinx.coroutines.launch
 
 private val AppGreen = Color(0xFF4CAF50)
 private val AppRed = Color(0xFFF44336)
-private val AppInactiveGrey = Color(0xFF333333)
+private val AppInactiveGrey = Color(0xFF555555)
 private val AppTextGrey = Color(0xFF9E9E9E)
 
 @SuppressLint("NewApi")
@@ -49,6 +48,8 @@ fun ScheduleScreen(
 ) {
     val state by viewModel.oolerState.collectAsState()
     val schedule by viewModel.schedule.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     
     var currentRows by remember { mutableStateOf(schedule.rows) }
     
@@ -76,6 +77,13 @@ fun ScheduleScreen(
 
     Scaffold(
         containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                title = { Text("Weekly Schedule", fontWeight = FontWeight.Bold) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         modifier = modifier.background(bgColor)
     ) { padding ->
         Column(
@@ -84,29 +92,6 @@ fun ScheduleScreen(
                 .fillMaxSize()
                 .padding(horizontal = 24.dp)
         ) {
-            Spacer(modifier = Modifier.height(32.dp))
-            
-            Text(
-                "OOLER",
-                style = MaterialTheme.typography.displaySmall.copy(
-                    fontWeight = FontWeight.Black,
-                    fontFamily = FontFamily.SansSerif,
-                    letterSpacing = 4.sp,
-                    color = Color.White
-                )
-            )
-            
-            Text(
-                "WEEKLY SLEEP SCHEDULE".toUpperCase(Locale.current),
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    letterSpacing = 2.sp
-                )
-            )
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
             // Ooler Time and Global Toggle Row
             Row(
                 modifier = Modifier
@@ -169,12 +154,41 @@ fun ScheduleScreen(
                     ScheduleRowCard(
                         row = row,
                         onUpdate = { updatedRow ->
+                            // Validation: Duration < 24h
+                            val startStep = updatedRow.steps.first()
+                            val endStep = updatedRow.steps.last()
+                            val duration = if (endStep.timeMinutes > startStep.timeMinutes) {
+                                endStep.timeMinutes - startStep.timeMinutes
+                            } else {
+                                1440 - startStep.timeMinutes + endStep.timeMinutes
+                            }
+
+                            if (duration >= 1440) {
+                                scope.launch { snackbarHostState.showSnackbar("Sequence cannot exceed 24 hours") }
+                                return@ScheduleRowCard
+                            }
+
+                            // Validation: Conflicts with other rows
+                            val otherRows = currentRows.filter { it.id != row.id && it.enabled }
+                            val conflicts = updatedRow.days.any { day ->
+                                otherRows.any { other -> 
+                                    other.days.contains(day) && isRowConflicting(updatedRow, other)
+                                }
+                            }
+
+                            if (conflicts) {
+                                scope.launch { snackbarHostState.showSnackbar("Schedule conflict detected on selected days") }
+                            }
+
                             currentRows = currentRows.map { if (it.id == updatedRow.id) updatedRow else it }
                             viewModel.onScheduleChanged()
                         },
                         onDelete = {
                             currentRows = currentRows.filter { it.id != row.id }
                             viewModel.onScheduleChanged()
+                        },
+                        onNotifyShift = { 
+                            scope.launch { snackbarHostState.showSnackbar("Time adjusted to maintain sequence") }
                         }
                     )
                 }
@@ -212,7 +226,8 @@ fun ScheduleScreen(
 fun ScheduleRowCard(
     row: ScheduleRow,
     onUpdate: (ScheduleRow) -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onNotifyShift: () -> Unit
 ) {
     val context = LocalContext.current
     
@@ -231,7 +246,7 @@ fun ScheduleRowCard(
                 val tempChanges = (row.steps.size - 2).coerceAtLeast(0)
                 
                 val title = if (startStep != null && endStep != null) {
-                    val tempsPart = if (tempChanges > 0) " Temps: $tempChanges" else ""
+                    val tempsPart = if (tempChanges > 1) " Temps: $tempChanges" else ""
                     "ON: ${formatMinutes(startStep.timeMinutes)} OFF: ${formatMinutes(endStep.timeMinutes)}$tempsPart"
                 } else {
                     "Sequence"
@@ -271,8 +286,19 @@ fun ScheduleRowCard(
                         isLast = index == row.steps.size - 1,
                         onUpdateTime = { newMinutes ->
                             val newSteps = row.steps.toMutableList()
-                            newSteps[index] = step.copy(timeMinutes = newMinutes)
-                            onUpdate(row.copy(steps = newSteps.sortedBy { it.timeMinutes }))
+                            var shifted = false
+                            
+                            // Apply shift only to the current step if it would be before the previous one
+                            var finalMinutes = newMinutes
+                            if (index > 0 && finalMinutes <= newSteps[index - 1].timeMinutes) {
+                                finalMinutes = (newSteps[index - 1].timeMinutes + 1) % 1440
+                                shifted = true
+                            }
+                            
+                            newSteps[index] = step.copy(timeMinutes = finalMinutes)
+                            
+                            if (shifted) onNotifyShift()
+                            onUpdate(row.copy(steps = newSteps))
                         },
                         onUpdateTemp = { newTemp ->
                             val newSteps = row.steps.toMutableList()
@@ -292,7 +318,10 @@ fun ScheduleRowCard(
                         IconButton(
                             onClick = {
                                 val nextStep = row.steps[index + 1]
-                                val midTime = (step.timeMinutes + nextStep.timeMinutes) / 2
+                                var midTime = (step.timeMinutes + nextStep.timeMinutes) / 2
+                                if (nextStep.timeMinutes <= step.timeMinutes) {
+                                    midTime = (step.timeMinutes + (nextStep.timeMinutes + 1440)) / 2 % 1440
+                                }
                                 val newSteps = row.steps.toMutableList()
                                 newSteps.add(index + 1, ScheduleStep(timeMinutes = midTime, temperatureF = step.temperatureF))
                                 onUpdate(row.copy(steps = newSteps))
@@ -369,9 +398,9 @@ fun StepBox(
     Box(contentAlignment = Alignment.TopStart) {
         Box(
             modifier = Modifier
-                .padding(top = 8.dp, start = 8.dp) // Space for the remove icon
+                .padding(top = 8.dp, start = 8.dp) 
                 .width(110.dp)
-                .height(100.dp)
+                .height(110.dp) 
                 .border(1.dp, boxColor.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
                 .background(boxColor.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
                 .padding(8.dp)
@@ -417,21 +446,26 @@ fun StepBox(
                     Text(
                         "OFF",
                         style = MaterialTheme.typography.labelLarge,
-                        color = AppTextGrey
+                        color = AppTextGrey,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
         }
 
         if (onRemove != null) {
-            IconButton(
-                onClick = onRemove,
-                modifier = Modifier.size(24.dp)
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f), CircleShape)
+                    .clip(CircleShape)
+                    .clickable { onRemove() },
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    Icons.Default.RemoveCircle,
+                    Icons.Default.RemoveCircleOutline,
                     contentDescription = "Remove",
-                    tint = AppRed,
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -513,6 +547,17 @@ fun TemperaturePickerDialog(
             }
         }
     )
+}
+
+private fun isRowConflicting(row1: ScheduleRow, row2: ScheduleRow): Boolean {
+    val start1 = row1.steps.first().timeMinutes
+    val end1 = row1.steps.last().timeMinutes
+    val start2 = row2.steps.first().timeMinutes
+    val end2 = row2.steps.last().timeMinutes
+
+    fun inRange(time: Int, start: Int, end: Int) = if (end > start) time in start until end else time >= start || time < end
+    
+    return inRange(start1, start2, end2) || inRange(start2, start1, end1)
 }
 
 private fun formatMinutes(minutes: Int): String {

@@ -153,13 +153,13 @@ fun MainScreen(viewModel: OolerViewModel = hiltViewModel()) {
                     )
                 }
 
-                // Center Sync Button - Moved down to be in line with icons
+                // Center Sync Button - Now in line with navigation items
                 if (hasPendingChanges) {
                     FilledIconButton(
                         onClick = { viewModel.saveSchedule(schedule) },
                         modifier = Modifier
                             .size(52.dp)
-                            .padding(bottom = 12.dp), // Move up slightly from bottom edge to center with icons
+                            .padding(bottom = 4.dp), 
                         shape = CircleShape,
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
