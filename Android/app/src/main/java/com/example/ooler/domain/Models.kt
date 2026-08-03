@@ -51,11 +51,20 @@ data class OolerSchedule(
 data class ScheduleRow(
     val id: String = java.util.UUID.randomUUID().toString(),
     val days: Set<Int> = emptySet(), // 0=Mon, 6=Sun
-    val onTimeMinutes: Int = 1320, // Default 10:00 PM
-    val offTimeMinutes: Int = 420,  // Default 7:00 AM
-    val temperatureF: Int = 68,
+    val steps: List<ScheduleStep> = listOf(
+        ScheduleStep(timeMinutes = 1320, temperatureF = 68), // Default ON at 10 PM
+        ScheduleStep(timeMinutes = 420, temperatureF = 0)    // Default OFF at 7 AM
+    ),
     val enabled: Boolean = true
 )
+
+data class ScheduleStep(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val timeMinutes: Int,
+    val temperatureF: Int // 0 for OFF
+) {
+    val isOff: Boolean get() = temperatureF == 0
+}
 
 object OolerConstants {
     const val TEMP_LO_F = 45

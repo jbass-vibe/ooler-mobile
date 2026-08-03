@@ -5,15 +5,15 @@ import android.app.TimePickerDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,10 +31,10 @@ import androidx.compose.ui.unit.sp
 import com.example.ooler.domain.OolerConstants
 import com.example.ooler.domain.OolerSchedule
 import com.example.ooler.domain.ScheduleRow
+import com.example.ooler.domain.ScheduleStep
 import java.time.format.DateTimeFormatter
 import java.util.*
 
-private val AppBlack = Color(0xFF000000)
 private val AppGreen = Color(0xFF4CAF50)
 private val AppRed = Color(0xFFF44336)
 private val AppInactiveGrey = Color(0xFF333333)
@@ -50,10 +50,8 @@ fun ScheduleScreen(
     val state by viewModel.oolerState.collectAsState()
     val schedule by viewModel.schedule.collectAsState()
     
-    // Local state to manage edits before saving
     var currentRows by remember { mutableStateOf(schedule.rows) }
     
-    // Sync local state when VM schedule changes (e.g. on load)
     LaunchedEffect(schedule.rows) {
         currentRows = schedule.rows
     }
@@ -78,35 +76,6 @@ fun ScheduleScreen(
 
     Scaffold(
         containerColor = Color.Transparent,
-        bottomBar = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp, start = 48.dp, end = 48.dp)
-            ) {
-                Button(
-                    onClick = { 
-                        viewModel.saveSchedule(OolerSchedule(rows = currentRows))
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    shape = RoundedCornerShape(24.dp)
-                ) {
-                    Text(
-                        "SAVE & SYNC",
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
-                    )
-                }
-            }
-        },
         modifier = modifier.background(bgColor)
     ) { padding ->
         Column(
@@ -117,7 +86,6 @@ fun ScheduleScreen(
         ) {
             Spacer(modifier = Modifier.height(32.dp))
             
-            // Header
             Text(
                 "OOLER",
                 style = MaterialTheme.typography.displaySmall.copy(
@@ -139,7 +107,7 @@ fun ScheduleScreen(
             
             Spacer(modifier = Modifier.height(24.dp))
             
-            // Clock and Global Toggle Row
+            // Ooler Time and Global Toggle Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -177,6 +145,7 @@ fun ScheduleScreen(
                         onCheckedChange = { enabled ->
                             allTimersEnabled = enabled
                             currentRows = currentRows.map { it.copy(enabled = enabled) }
+                            viewModel.onScheduleChanged()
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
@@ -191,7 +160,6 @@ fun ScheduleScreen(
             
             Spacer(modifier = Modifier.height(24.dp))
             
-            // Schedule List
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -202,9 +170,11 @@ fun ScheduleScreen(
                         row = row,
                         onUpdate = { updatedRow ->
                             currentRows = currentRows.map { if (it.id == updatedRow.id) updatedRow else it }
+                            viewModel.onScheduleChanged()
                         },
                         onDelete = {
                             currentRows = currentRows.filter { it.id != row.id }
+                            viewModel.onScheduleChanged()
                         }
                     )
                 }
@@ -219,10 +189,11 @@ fun ScheduleScreen(
                         TextButton(
                             onClick = { 
                                 currentRows = currentRows + ScheduleRow()
+                                viewModel.onScheduleChanged()
                             }
                         ) {
                             Text(
-                                "+ ADD SCHEDULED TIME",
+                                "+ ADD SCHEDULED SEQUENCE",
                                 color = MaterialTheme.colorScheme.primary,
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
@@ -244,7 +215,6 @@ fun ScheduleRowCard(
     onDelete: () -> Unit
 ) {
     val context = LocalContext.current
-    var showTempDialog by remember { mutableStateOf(false) }
     
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -252,80 +222,98 @@ fun ScheduleRowCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            // Top Section
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // ON Time Box
-                TimeBox(
-                    label = "ON",
-                    minutes = row.onTimeMinutes,
-                    color = AppGreen,
-                    onClick = {
-                        showTimePicker(context, row.onTimeMinutes) { newMinutes ->
-                            onUpdate(row.copy(onTimeMinutes = newMinutes))
-                        }
-                    }
-                )
+                val startStep = row.steps.firstOrNull()
+                val endStep = row.steps.lastOrNull()
+                val tempChanges = (row.steps.size - 2).coerceAtLeast(0)
                 
-                Spacer(modifier = Modifier.width(12.dp))
-                
-                // OFF Time Box
-                TimeBox(
-                    label = "OFF",
-                    minutes = row.offTimeMinutes,
-                    color = AppRed,
-                    onClick = {
-                        showTimePicker(context, row.offTimeMinutes) { newMinutes ->
-                            onUpdate(row.copy(offTimeMinutes = newMinutes))
-                        }
-                    }
-                )
-                
-                // Temp Box
-                Spacer(modifier = Modifier.width(12.dp))
-                Box(
-                    modifier = Modifier
-                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-                        .clickable { showTempDialog = true }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("TEMP", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        Text("${row.temperatureF}°", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
-                    }
+                val title = if (startStep != null && endStep != null) {
+                    val tempsPart = if (tempChanges > 0) " Temps: $tempChanges" else ""
+                    "ON: ${formatMinutes(startStep.timeMinutes)} OFF: ${formatMinutes(endStep.timeMinutes)}$tempsPart"
+                } else {
+                    "Sequence"
                 }
 
-                if (showTempDialog) {
-                    TemperaturePickerDialog(
-                        initialTemp = row.temperatureF,
-                        onDismiss = { showTempDialog = false },
-                        onConfirm = { 
-                            onUpdate(row.copy(temperatureF = it))
-                            showTempDialog = false
-                        }
-                    )
-                }
-
-                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
                 
-                IconButton(onClick = onDelete) {
+                IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
                     Icon(
                         Icons.Default.Delete, 
                         contentDescription = "Delete", 
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f),
-                        modifier = Modifier.size(24.dp)
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.4f),
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
             
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // Timeline of Steps
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                row.steps.forEachIndexed { index, step ->
+                    StepBox(
+                        step = step,
+                        isFirst = index == 0,
+                        isLast = index == row.steps.size - 1,
+                        onUpdateTime = { newMinutes ->
+                            val newSteps = row.steps.toMutableList()
+                            newSteps[index] = step.copy(timeMinutes = newMinutes)
+                            onUpdate(row.copy(steps = newSteps.sortedBy { it.timeMinutes }))
+                        },
+                        onUpdateTemp = { newTemp ->
+                            val newSteps = row.steps.toMutableList()
+                            newSteps[index] = step.copy(temperatureF = newTemp)
+                            onUpdate(row.copy(steps = newSteps))
+                        },
+                        onRemove = if (row.steps.size > 2 && index != 0 && index != row.steps.size - 1) {
+                            {
+                                val newSteps = row.steps.toMutableList()
+                                newSteps.removeAt(index)
+                                onUpdate(row.copy(steps = newSteps))
+                            }
+                        } else null
+                    )
+                    
+                    if (index < row.steps.size - 1) {
+                        IconButton(
+                            onClick = {
+                                val nextStep = row.steps[index + 1]
+                                val midTime = (step.timeMinutes + nextStep.timeMinutes) / 2
+                                val newSteps = row.steps.toMutableList()
+                                newSteps.add(index + 1, ScheduleStep(timeMinutes = midTime, temperatureF = step.temperatureF))
+                                onUpdate(row.copy(steps = newSteps))
+                            },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.AddCircleOutline,
+                                contentDescription = "Insert Point",
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.1f), thickness = 1.dp)
             Spacer(modifier = Modifier.height(16.dp))
             
-            // Bottom Section: Day Bubbles (Sun to Sat)
+            // Bottom Section: Day Bubbles
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -341,11 +329,7 @@ fun ScheduleRowCard(
                             .clip(CircleShape)
                             .background(if (isSelected) MaterialTheme.colorScheme.primary else AppInactiveGrey)
                             .clickable {
-                                val newDays = if (isSelected) {
-                                    row.days - oolerDayIndex
-                                } else {
-                                    row.days + oolerDayIndex
-                                }
+                                val newDays = if (isSelected) row.days - oolerDayIndex else row.days + oolerDayIndex
                                 onUpdate(row.copy(days = newDays))
                             },
                         contentAlignment = Alignment.Center
@@ -365,36 +349,104 @@ fun ScheduleRowCard(
 }
 
 @Composable
-fun TimeBox(
-    label: String,
-    minutes: Int,
-    color: Color,
-    onClick: () -> Unit
+fun StepBox(
+    step: ScheduleStep,
+    isFirst: Boolean,
+    isLast: Boolean,
+    onUpdateTime: (Int) -> Unit,
+    onUpdateTemp: (Int) -> Unit,
+    onRemove: (() -> Unit)?
 ) {
-    val timeStr = formatMinutes(minutes)
-    Box(
-        modifier = Modifier
-            .border(1.dp, color.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-            .background(color.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = color
+    val context = LocalContext.current
+    var showTempDialog by remember { mutableStateOf(false) }
+
+    val boxColor = when {
+        isFirst -> AppGreen
+        isLast -> AppRed
+        else -> MaterialTheme.colorScheme.primary
+    }
+
+    Box(contentAlignment = Alignment.TopStart) {
+        Box(
+            modifier = Modifier
+                .padding(top = 8.dp, start = 8.dp) // Space for the remove icon
+                .width(110.dp)
+                .height(100.dp)
+                .border(1.dp, boxColor.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                .background(boxColor.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                .padding(8.dp)
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = if (isFirst) "START" else if (isLast) "END" else "CHANGE",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = boxColor,
+                    fontWeight = FontWeight.Bold
                 )
-            )
-            Text(
-                timeStr,
-                style = MaterialTheme.typography.titleMedium.copy(
+                
+                Text(
+                    text = formatMinutes(step.timeMinutes),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    modifier = Modifier.clickable {
+                        showTimePicker(context, step.timeMinutes, onUpdateTime)
+                    }
                 )
-            )
+                
+                if (!isLast) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        onClick = { showTempDialog = true },
+                        color = boxColor.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "${step.temperatureF}°",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "OFF",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = AppTextGrey
+                    )
+                }
+            }
         }
+
+        if (onRemove != null) {
+            IconButton(
+                onClick = onRemove,
+                modifier = Modifier.size(24.dp)
+            ) {
+                Icon(
+                    Icons.Default.RemoveCircle,
+                    contentDescription = "Remove",
+                    tint = AppRed,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+
+    if (showTempDialog) {
+        TemperaturePickerDialog(
+            initialTemp = step.temperatureF,
+            onDismiss = { showTempDialog = false },
+            onConfirm = { 
+                onUpdateTemp(it)
+                showTempDialog = false
+            }
+        )
     }
 }
 

@@ -8,19 +8,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -107,23 +107,23 @@ fun PermissionRequester(
 @Composable
 fun MainScreen(viewModel: OolerViewModel = hiltViewModel()) {
     val navController = rememberNavController()
-    val items = listOf(
-        Screen.Dashboard,
-        Screen.Schedule
-    )
+    val hasPendingChanges by viewModel.hasPendingChanges.collectAsState()
+    val schedule by viewModel.schedule.collectAsState()
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val currentDestination = navBackStackEntry?.destination
-                items.forEach { screen ->
+            Box(contentAlignment = Alignment.Center) {
+                NavigationBar {
+                    val navBackStackEntry by navController.currentBackStackEntryAsState()
+                    val currentDestination = navBackStackEntry?.destination
+                    
+                    // Dashboard Item
                     NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = screen.label) },
-                        label = { Text(screen.label) },
-                        selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
+                        icon = { Icon(Screen.Dashboard.icon, contentDescription = Screen.Dashboard.label) },
+                        label = { Text(Screen.Dashboard.label) },
+                        selected = currentDestination?.hierarchy?.any { it.route == Screen.Dashboard.route } == true,
                         onClick = {
-                            navController.navigate(screen.route) {
+                            navController.navigate(Screen.Dashboard.route) {
                                 popUpTo(navController.graph.findStartDestination().id) {
                                     saveState = true
                                 }
@@ -132,6 +132,42 @@ fun MainScreen(viewModel: OolerViewModel = hiltViewModel()) {
                             }
                         }
                     )
+
+                    // Spacer for the center button
+                    Spacer(modifier = Modifier.weight(0.2f))
+
+                    // Schedule Item
+                    NavigationBarItem(
+                        icon = { Icon(Screen.Schedule.icon, contentDescription = Screen.Schedule.label) },
+                        label = { Text(Screen.Schedule.label) },
+                        selected = currentDestination?.hierarchy?.any { it.route == Screen.Schedule.route } == true,
+                        onClick = {
+                            navController.navigate(Screen.Schedule.route) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    )
+                }
+
+                // Center Sync Button - Moved down to be in line with icons
+                if (hasPendingChanges) {
+                    FilledIconButton(
+                        onClick = { viewModel.saveSchedule(schedule) },
+                        modifier = Modifier
+                            .size(52.dp)
+                            .padding(bottom = 12.dp), // Move up slightly from bottom edge to center with icons
+                        shape = CircleShape,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = "Sync Now")
+                    }
                 }
             }
         },

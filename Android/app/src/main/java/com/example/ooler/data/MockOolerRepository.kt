@@ -30,15 +30,19 @@ class MockOolerRepository : OolerRepository {
             rows = listOf(
                 ScheduleRow(
                     days = setOf(0, 1, 2, 3, 4), // Mon-Fri
-                    onTimeMinutes = 22 * 60,   // 10:00 PM
-                    offTimeMinutes = 6 * 60 + 30, // 6:30 AM
-                    temperatureF = 64
+                    steps = listOf(
+                        ScheduleStep(timeMinutes = 22 * 60, temperatureF = 64), // 10 PM: Sleep
+                        ScheduleStep(timeMinutes = 2 * 60, temperatureF = 68),  // 2 AM: Deep sleep adjustment
+                        ScheduleStep(timeMinutes = 6 * 60 + 30, temperatureF = 110), // 6:30 AM: Warm Wake
+                        ScheduleStep(timeMinutes = 7 * 60, temperatureF = 0)    // 7 AM: OFF
+                    )
                 ),
                 ScheduleRow(
                     days = setOf(5, 6), // Sat-Sun
-                    onTimeMinutes = 23 * 60, // 11:00 PM
-                    offTimeMinutes = 8 * 60, // 8:00 AM
-                    temperatureF = 68
+                    steps = listOf(
+                        ScheduleStep(timeMinutes = 23 * 60, temperatureF = 68), // 11 PM
+                        ScheduleStep(timeMinutes = 8 * 60, temperatureF = 0)    // 8 AM
+                    )
                 )
             )
         )
