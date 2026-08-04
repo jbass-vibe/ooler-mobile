@@ -9,6 +9,10 @@ interface OolerRepository {
 
     suspend fun connect()
     suspend fun disconnect()
+    fun forceDisconnect() // Non-suspending for lifecycle cleanup
+
+    fun startPolling()
+    fun stopPolling()
 
     suspend fun setPower(on: Boolean)
     suspend fun setMode(mode: OolerMode)
@@ -17,5 +21,7 @@ interface OolerRepository {
     suspend fun setDisplayUnit(unit: TemperatureUnit)
 
     suspend fun updateSchedule(schedule: OolerSchedule)
+    suspend fun readSchedule()
+    fun restoreLocalSchedule(schedule: OolerSchedule)
     suspend fun syncClock()
 }

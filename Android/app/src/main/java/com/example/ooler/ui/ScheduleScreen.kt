@@ -50,16 +50,28 @@ fun ScheduleScreen(
 ) {
     val state by viewModel.oolerState.collectAsState()
     val schedule by viewModel.schedule.collectAsState()
+    val draftRows by viewModel.draftRows.collectAsState()
     val isOutOfSync by viewModel.isOutOfSync.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     
-    var currentRows by remember { mutableStateOf(schedule.rows) }
+    var localRows by remember { mutableStateOf(draftRows) }
     
-    LaunchedEffect(schedule.rows) {
-        currentRows = schedule.rows
+    LaunchedEffect(draftRows) {
+        localRows = draftRows
     }
     
+    LaunchedEffect(schedule.rows) {
+        if (localRows.isEmpty() && schedule.rows.isNotEmpty()) {
+            localRows = schedule.rows
+        }
+    }
+    
+    // Read from hardware once when this screen is opened
+    LaunchedEffect(Unit) {
+        viewModel.readScheduleFromHardware()
+    }
+
     var allTimersEnabled by remember { mutableStateOf(true) }
 
     val bgColor = if (state.powerOn) {
@@ -71,10 +83,7 @@ fun ScheduleScreen(
         )
     } else {
         Brush.verticalGradient(
-            colors = listOf(
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                MaterialTheme.colorScheme.background
-            )
+            colors = listOf(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), MaterialTheme.colorScheme.background)
         )
     }
 
@@ -83,65 +92,42 @@ fun ScheduleScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Weekly Schedule", fontWeight = FontWeight.Bold) },
+                actions = {
+                    IconButton(onClick = { viewModel.clearDatabase() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Hard Reset Database")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         modifier = modifier.background(bgColor)
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .padding(horizontal = 24.dp)
-        ) {
+        Column(modifier = Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp)) {
             // Ooler Time and Global Toggle Row
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f))
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val timeStr = state.deviceTime?.format(DateTimeFormatter.ofPattern("h:mm a")) ?: "--:--"
-                
                 Column {
-                    Text(
-                        "Ooler Time",
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                    Text(
-                        timeStr,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("Ooler Time", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
+                    Text(timeStr, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
-
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "All Timers",
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(end = 8.dp)
-                    )
+                    Text("All Timers", color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(end = 8.dp))
                     Switch(
                         checked = allTimersEnabled,
                         onCheckedChange = { enabled ->
                             allTimersEnabled = enabled
-                            currentRows = currentRows.map { it.copy(enabled = enabled) }
-                            viewModel.onScheduleChanged()
+                            val updated = localRows.map { it.copy(enabled = enabled) }
+                            localRows = updated
+                            viewModel.onScheduleChanged(updated)
                         },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = MaterialTheme.colorScheme.primary,
-                            uncheckedThumbColor = AppTextGrey,
-                            uncheckedTrackColor = AppInactiveGrey,
-                            uncheckedBorderColor = Color.Transparent
-                        )
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = MaterialTheme.colorScheme.primary, uncheckedThumbColor = AppTextGrey, uncheckedTrackColor = AppInactiveGrey, uncheckedBorderColor = Color.Transparent)
                     )
                 }
             }
@@ -149,101 +135,61 @@ fun ScheduleScreen(
             Spacer(modifier = Modifier.height(24.dp))
             
             if (isOutOfSync) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    tonalElevation = 2.dp
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.SyncProblem,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onErrorContainer
-                        )
+                Surface(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp).clickable { viewModel.saveSchedule() }, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer, tonalElevation = 2.dp) {
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.SyncProblem, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            "Device schedule differs from your phone. Sync to overwrite the device.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Text("Device schedule differs from phone. Sync to overwrite.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.weight(1f))
                     }
                 }
             }
             
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                contentPadding = PaddingValues(bottom = 100.dp)
-            ) {
-                items(currentRows, key = { it.id }) { row ->
+            LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(bottom = 100.dp)) {
+                items(localRows, key = { it.id }) { row ->
                     ScheduleRowCard(
                         row = row,
                         onUpdate = { updatedRow ->
-                            // Validation: Duration < 24h
-                            val startStep = updatedRow.steps.first()
-                            val endStep = updatedRow.steps.last()
-                            val duration = if (endStep.timeMinutes > startStep.timeMinutes) {
-                                endStep.timeMinutes - startStep.timeMinutes
-                            } else {
-                                1440 - startStep.timeMinutes + endStep.timeMinutes
+                            var totalDuration = 0
+                            updatedRow.steps.forEachIndexed { i, step ->
+                                if (i > 0) {
+                                    val prev = updatedRow.steps[i-1].timeMinutes
+                                    val curr = step.timeMinutes
+                                    val diff = curr - prev
+                                    totalDuration += if (diff >= 0) diff else (1440 + diff)
+                                }
                             }
-
-                            if (duration >= 1440) {
+                            if (totalDuration >= 1440) {
                                 scope.launch { snackbarHostState.showSnackbar("Sequence cannot exceed 24 hours") }
                                 return@ScheduleRowCard
                             }
-
-                            // Validation: Conflicts with other rows
-                            val otherRows = currentRows.filter { it.id != row.id && it.enabled }
+                            val otherRows = localRows.filter { it.id != row.id && it.enabled }
                             val conflicts = updatedRow.days.any { day ->
-                                otherRows.any { other -> 
-                                    other.days.contains(day) && isRowConflicting(updatedRow, other)
-                                }
+                                otherRows.any { other -> other.days.contains(day) && isRowConflicting(updatedRow, other) }
                             }
-
                             if (conflicts) {
-                                scope.launch { snackbarHostState.showSnackbar("Schedule conflict detected on selected days") }
+                                scope.launch { snackbarHostState.showSnackbar("Schedule conflict detected") }
                             }
-
-                            currentRows = currentRows.map { if (it.id == updatedRow.id) updatedRow else it }
-                            viewModel.onScheduleChanged()
+                            val updatedList = localRows.map { if (it.id == updatedRow.id) updatedRow else it }
+                            localRows = updatedList
+                            viewModel.onScheduleChanged(updatedList)
                         },
                         onDelete = {
-                            currentRows = currentRows.filter { it.id != row.id }
-                            viewModel.onScheduleChanged()
+                            val updatedList = localRows.filter { it.id != row.id }
+                            localRows = updatedList
+                            viewModel.onScheduleChanged(updatedList)
                         },
-                        onNotifyShift = { 
-                            scope.launch { snackbarHostState.showSnackbar("Time adjusted to maintain sequence") }
-                        }
+                        onNotifyShift = { scope.launch { snackbarHostState.showSnackbar("Time adjusted to maintain order") } }
                     )
                 }
                 
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        TextButton(
-                            onClick = { 
-                                currentRows = currentRows + ScheduleRow()
-                                viewModel.onScheduleChanged()
-                            }
-                        ) {
-                            Text(
-                                "+ ADD SCHEDULED SEQUENCE",
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.sp
-                                )
-                            )
+                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
+                        TextButton(onClick = { 
+                            val updatedList = localRows + ScheduleRow()
+                            localRows = updatedList
+                            viewModel.onScheduleChanged(updatedList)
+                        }) {
+                            Text("+ ADD SCHEDULED SEQUENCE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.sp))
                         }
                     }
                 }
@@ -260,81 +206,35 @@ fun ScheduleRowCard(
     onNotifyShift: () -> Unit
 ) {
     val context = LocalContext.current
-    
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f))
-    ) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f))) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 val startStep = row.steps.firstOrNull()
                 val endStep = row.steps.lastOrNull()
                 val tempChanges = (row.steps.size - 2).coerceAtLeast(0)
-                
                 val title = if (startStep != null && endStep != null) {
                     val tempsPart = if (tempChanges > 1) " Temps: $tempChanges" else ""
                     "ON: ${formatMinutes(startStep.timeMinutes)} OFF: ${formatMinutes(endStep.timeMinutes)}$tempsPart"
-                } else {
-                    "Sequence"
-                }
-
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.weight(1f)
-                )
-                
+                } else "Sequence"
+                Text(text = title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
                 IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
-                    Icon(
-                        Icons.Default.Delete, 
-                        contentDescription = "Delete", 
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.4f),
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.4f), modifier = Modifier.size(18.dp))
                 }
             }
-            
             Spacer(modifier = Modifier.height(12.dp))
-            
-            // Timeline of Steps
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row.steps.forEachIndexed { index, step ->
-                    StepBox(
-                        step = step,
-                        isFirst = index == 0,
-                        isLast = index == row.steps.size - 1,
-                        onUpdateTime = { newMinutes ->
+                    StepBox(step = step, isFirst = index == 0, isLast = index == row.steps.size - 1, onUpdateTime = { newMinutes ->
                             val newSteps = row.steps.toMutableList()
                             var shifted = false
-                            
                             var finalMinutes = newMinutes
-                            // Clamping: only happen to the button interacted with, don't affect ones after.
-                            if (index > 0 && finalMinutes <= newSteps[index - 1].timeMinutes) {
+                            if (index > 0 && finalMinutes == newSteps[index - 1].timeMinutes) {
                                 finalMinutes = (newSteps[index - 1].timeMinutes + 1) % 1440
                                 shifted = true
                             }
-                            
                             newSteps[index] = step.copy(timeMinutes = finalMinutes)
-                            
                             if (shifted) onNotifyShift()
-                            // Sort at the end to keep the UI valid and logical for compilation,
-                            // even if requirement 1 says "don't affect buttons after",
-                            // we must ensure the time Minutes are strictly increasing for Ooler hardware.
-                            // However, if the user said "shifting should not affect buttons after",
-                            // maybe we should just allow the UI to show them in whatever order?
-                            // No, convertRowsToEvents requires a sequence.
-                            onUpdate(row.copy(steps = newSteps.sortedBy { it.timeMinutes }))
+                            onUpdate(row.copy(steps = newSteps))
                         },
                         onUpdateTemp = { newTemp ->
                             val newSteps = row.steps.toMutableList()
@@ -349,63 +249,33 @@ fun ScheduleRowCard(
                             }
                         } else null
                     )
-                    
                     if (index < row.steps.size - 1) {
-                        IconButton(
-                            onClick = {
+                        IconButton(onClick = {
                                 val nextStep = row.steps[index + 1]
                                 var midTime = (step.timeMinutes + nextStep.timeMinutes) / 2
-                                if (nextStep.timeMinutes <= step.timeMinutes) {
-                                    midTime = (step.timeMinutes + (nextStep.timeMinutes + 1440)) / 2 % 1440
-                                }
+                                if (nextStep.timeMinutes <= step.timeMinutes) { midTime = (step.timeMinutes + (nextStep.timeMinutes + 1440)) / 2 % 1440 }
                                 val newSteps = row.steps.toMutableList()
                                 newSteps.add(index + 1, ScheduleStep(timeMinutes = midTime, temperatureF = step.temperatureF))
                                 onUpdate(row.copy(steps = newSteps))
-                            },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.AddCircleOutline,
-                                contentDescription = "Insert Point",
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                            )
+                            }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.AddCircleOutline, contentDescription = "Insert Point", tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) )
                         }
                     }
                 }
             }
-            
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.1f), thickness = 1.dp)
             Spacer(modifier = Modifier.height(16.dp))
-            
-            // Bottom Section: Day Bubbles
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 val dayOrder = listOf(6, 0, 1, 2, 3, 4, 5)
                 val dayLabels = listOf("S", "M", "T", "W", "T", "F", "S")
-                
                 dayOrder.forEachIndexed { index, oolerDayIndex ->
                     val isSelected = row.days.contains(oolerDayIndex)
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(if (isSelected) MaterialTheme.colorScheme.primary else AppInactiveGrey.copy(alpha = 0.3f))
-                            .clickable {
+                    Box(modifier = Modifier.size(38.dp).clip(CircleShape).background(if (isSelected) MaterialTheme.colorScheme.primary else AppInactiveGrey.copy(alpha = 0.3f)).clickable {
                                 val newDays = if (isSelected) row.days - oolerDayIndex else row.days + oolerDayIndex
                                 onUpdate(row.copy(days = newDays))
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = dayLabels[index],
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else AppTextGrey
-                            )
-                        )
+                            }, contentAlignment = Alignment.Center) {
+                        Text(text = dayLabels[index], style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = if (isSelected) MaterialTheme.colorScheme.onPrimary else AppTextGrey))
                     }
                 }
             }
@@ -424,96 +294,35 @@ fun StepBox(
 ) {
     val context = LocalContext.current
     var showTempDialog by remember { mutableStateOf(false) }
-
     val boxColor = when {
         isFirst -> AppGreen
         isLast -> AppRed
         else -> MaterialTheme.colorScheme.primary
     }
-
     Box(contentAlignment = Alignment.TopStart) {
-        Box(
-            modifier = Modifier
-                .padding(top = 8.dp, start = 8.dp) 
-                .width(110.dp)
-                .height(110.dp) 
-                .border(1.dp, boxColor.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                .background(boxColor.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                .padding(8.dp)
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = if (isFirst) "START" else if (isLast) "END" else "CHANGE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = boxColor,
-                    fontWeight = FontWeight.Bold
-                )
-                
-                Text(
-                    text = formatMinutes(step.timeMinutes),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable {
-                        showTimePicker(context, step.timeMinutes, onUpdateTime)
-                    }
-                )
-                
+        Box(modifier = Modifier.padding(top = 8.dp, start = 8.dp).width(110.dp).height(110.dp).border(1.dp, boxColor.copy(alpha = 0.4f), RoundedCornerShape(12.dp)).background(boxColor.copy(alpha = 0.1f), RoundedCornerShape(12.dp)).padding(8.dp)) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+                Text(text = if (isFirst) "START" else if (isLast) "END" else "CHANGE", style = MaterialTheme.typography.labelSmall, color = boxColor, fontWeight = FontWeight.Bold)
+                Text(text = formatMinutes(step.timeMinutes), style = MaterialTheme.typography.bodyMedium, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { showTimePicker(context, step.timeMinutes, onUpdateTime) })
                 if (!isLast) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Surface(
-                        onClick = { showTempDialog = true },
-                        color = boxColor.copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(4.dp)
-                    ) {
-                        Text(
-                            text = "${step.temperatureF}°",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
+                    Surface(onClick = { showTempDialog = true }, color = boxColor.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp)) {
+                        Text(text = "${step.temperatureF}°", style = MaterialTheme.typography.labelLarge, color = Color.White, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                     }
                 } else {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "OFF",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = AppTextGrey,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("OFF", style = MaterialTheme.typography.labelLarge, color = AppTextGrey, fontWeight = FontWeight.Bold)
                 }
             }
         }
-
         if (onRemove != null) {
-            // Remove button styled to match plus buttons
-            IconButton(
-                onClick = onRemove,
-                modifier = Modifier.size(24.dp)
-            ) {
-                Icon(
-                    Icons.Default.RemoveCircleOutline,
-                    contentDescription = "Remove",
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-                    modifier = Modifier.size(20.dp).background(Color.Transparent)
-                )
+            Box(modifier = Modifier.size(24.dp).background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f), CircleShape).clip(CircleShape).clickable { onRemove() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.RemoveCircleOutline, contentDescription = "Remove", tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), modifier = Modifier.size(20.dp).background(Color.Transparent))
             }
         }
     }
-
     if (showTempDialog) {
-        TemperaturePickerDialog(
-            initialTemp = step.temperatureF,
-            onDismiss = { showTempDialog = false },
-            onConfirm = { 
-                onUpdateTemp(it)
-                showTempDialog = false
-            }
-        )
+        TemperaturePickerDialog(initialTemp = step.temperatureF, onDismiss = { showTempDialog = false }, onConfirm = { onUpdateTemp(it); showTempDialog = false })
     }
 }
 
@@ -524,73 +333,45 @@ fun TemperaturePickerDialog(
     onConfirm: (Int) -> Unit
 ) {
     var temp by remember { mutableStateOf(initialTemp) }
-    
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Set Temperature") },
         text = {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "${temp}°F",
-                    style = MaterialTheme.typography.displayMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold
-                )
-                
+            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(text = "${temp}°F", style = MaterialTheme.typography.displayMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(24.dp))
-                
-                Slider(
-                    value = temp.toFloat(),
-                    onValueChange = { temp = it.toInt() },
-                    valueRange = OolerConstants.TEMP_MIN_F.toFloat()..OolerConstants.TEMP_MAX_F.toFloat()
-                )
-                
+                Slider(value = temp.toFloat(), onValueChange = { temp = it.toInt() }, valueRange = OolerConstants.TEMP_MIN_F.toFloat()..OolerConstants.TEMP_MAX_F.toFloat())
                 Spacer(modifier = Modifier.height(16.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    FilledTonalIconButton(
-                        onClick = { temp = (temp - 1).coerceAtLeast(OolerConstants.TEMP_MIN_F) },
-                        modifier = Modifier.size(56.dp)
-                    ) {
-                        Icon(Icons.Default.Remove, contentDescription = "Decrease")
-                    }
-                    FilledTonalIconButton(
-                        onClick = { temp = (temp + 1).coerceAtMost(OolerConstants.TEMP_MAX_F) },
-                        modifier = Modifier.size(56.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = "Increase")
-                    }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    FilledTonalIconButton(onClick = { temp = (temp - 1).coerceAtLeast(OolerConstants.TEMP_MIN_F) }, modifier = Modifier.size(56.dp)) { Icon(Icons.Default.Remove, contentDescription = "Decrease") }
+                    FilledTonalIconButton(onClick = { temp = (temp + 1).coerceAtMost(OolerConstants.TEMP_MAX_F) }, modifier = Modifier.size(56.dp)) { Icon(Icons.Default.Add, contentDescription = "Increase") }
                 }
             }
         },
-        confirmButton = {
-            Button(onClick = { onConfirm(temp) }) {
-                Text("Confirm")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
+        confirmButton = { Button(onClick = { onConfirm(temp) }) { Text("Confirm") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
 private fun isRowConflicting(row1: ScheduleRow, row2: ScheduleRow): Boolean {
+    if (row1.steps.isEmpty() || row2.steps.isEmpty()) return false
+    
+    // A row defines a single interval from steps.first() to steps.last()
     val start1 = row1.steps.first().timeMinutes
     val end1 = row1.steps.last().timeMinutes
     val start2 = row2.steps.first().timeMinutes
     val end2 = row2.steps.last().timeMinutes
 
-    fun inRange(time: Int, start: Int, end: Int) = if (end > start) time in start until end else time >= start || time < end
-    
-    return inRange(start1, start2, end2) || inRange(start2, start1, end1)
+    fun intervalOverlaps(s1: Int, e1: Int, s2: Int, e2: Int): Boolean {
+        // Normalize all to 0..2879 (2 days) to handle single midnight wrap
+        val r1 = if (e1 > s1) s1 until e1 else s1 until (e1 + 1440)
+        val r2 = if (e2 > s2) s2 until e2 else s2 until (e2 + 1440)
+        
+        // Basic intersection check
+        return r1.first < r2.last && r2.first < r1.last
+    }
+
+    return intervalOverlaps(start1, end1, start2, end2)
 }
 
 private fun formatMinutes(minutes: Int): String {
@@ -604,13 +385,5 @@ private fun formatMinutes(minutes: Int): String {
 private fun showTimePicker(context: android.content.Context, initialMinutes: Int, onTimeSelected: (Int) -> Unit) {
     val hour = initialMinutes / 60
     val minute = initialMinutes % 60
-    TimePickerDialog(
-        context,
-        { _, selectedHour, selectedMinute ->
-            onTimeSelected(selectedHour * 60 + selectedMinute)
-        },
-        hour,
-        minute,
-        false
-    ).show()
+    TimePickerDialog(context, { _, selectedHour, selectedMinute -> onTimeSelected(selectedHour * 60 + selectedMinute) }, hour, minute, false).show()
 }

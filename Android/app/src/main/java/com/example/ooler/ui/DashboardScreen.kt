@@ -27,6 +27,20 @@ import com.example.ooler.domain.TemperatureUnit
 @Composable
 fun DashboardScreen(viewModel: OolerViewModel) {
     val state by viewModel.oolerState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    DisposableEffect(Unit) {
+        viewModel.startPolling()
+        onDispose {
+            viewModel.stopPolling()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.errorMessage.collect { message ->
+            snackbarHostState.showSnackbar(message)
+        }
+    }
 
     val unitString = if (state.displayUnit == TemperatureUnit.CELSIUS) "°C" else "°F"
     val actualTemp = viewModel.getTemperatureInPreferredUnit(state.actualTemperature)
@@ -65,6 +79,7 @@ fun DashboardScreen(viewModel: OolerViewModel) {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
         Column(
@@ -248,19 +263,22 @@ fun DashboardScreen(viewModel: OolerViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 CompactTelemetryCard(
-                    label = "Ambient",
-                    value = if (state.ambientTemperatureF == 129) "--" else "$ambientTemp$unitString",
-                    icon = Icons.Default.Air
+                    label = "Water",
+                    value = "${state.waterLevel}%",
+                    icon = Icons.Default.Waves,
+                    modifier = Modifier.weight(1f)
                 )
                 CompactTelemetryCard(
                     label = "Humidity",
                     value = if (state.humidity == 129) "--" else "${state.humidity}%",
-                    icon = Icons.Default.WaterDrop
+                    icon = Icons.Default.WaterDrop,
+                    modifier = Modifier.weight(1f)
                 )
                 CompactTelemetryCard(
-                    label = "Water",
-                    value = "${state.waterLevel}%",
-                    icon = Icons.Default.Waves
+                    label = "Ambient",
+                    value = if (state.ambientTemperatureF == 129) "--" else "$ambientTemp$unitString",
+                    icon = Icons.Default.Air,
+                    modifier = Modifier.weight(1f)
                 )
             }
             

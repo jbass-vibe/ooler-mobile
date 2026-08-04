@@ -108,7 +108,13 @@ fun PermissionRequester(
 fun MainScreen(viewModel: OolerViewModel = hiltViewModel()) {
     val navController = rememberNavController()
     val hasPendingChanges by viewModel.hasPendingChanges.collectAsState()
+    val isOutOfSync by viewModel.isOutOfSync.collectAsState()
     val schedule by viewModel.schedule.collectAsState()
+
+    // Auto-connect on launch
+    LaunchedEffect(Unit) {
+        viewModel.connect()
+    }
 
     Scaffold(
         bottomBar = {
@@ -154,15 +160,15 @@ fun MainScreen(viewModel: OolerViewModel = hiltViewModel()) {
                 }
 
                 // Center Sync Button - Now in line with navigation items
-                if (hasPendingChanges) {
+                if (hasPendingChanges || isOutOfSync) {
                     FilledIconButton(
-                        onClick = { viewModel.saveSchedule(schedule) },
+                        onClick = { viewModel.saveSchedule() },
                         modifier = Modifier
                             .size(52.dp)
                             .padding(bottom = 4.dp), 
                         shape = CircleShape,
                         colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
+                            containerColor = if (isOutOfSync) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
                         )
                     ) {

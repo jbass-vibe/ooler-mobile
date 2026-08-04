@@ -61,6 +61,13 @@ class MockOolerRepository : OolerRepository {
         _oolerState.update { it.copy(isConnected = false) }
     }
 
+    override fun forceDisconnect() {
+        _oolerState.update { it.copy(isConnected = false) }
+    }
+
+    override fun startPolling() {}
+    override fun stopPolling() {}
+
     override suspend fun setPower(on: Boolean) {
         _oolerState.update { it.copy(powerOn = on) }
     }
@@ -88,6 +95,14 @@ class MockOolerRepository : OolerRepository {
     }
 
     override suspend fun updateSchedule(schedule: OolerSchedule) {
+        _schedule.value = schedule
+    }
+
+    override suspend fun readSchedule() {
+        // No-op in mock
+    }
+
+    override fun restoreLocalSchedule(schedule: OolerSchedule) {
         _schedule.value = schedule
     }
 

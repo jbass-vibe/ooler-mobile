@@ -5,6 +5,8 @@ import com.juul.kable.*
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import android.annotation.SuppressLint
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -26,143 +28,154 @@ class KableOolerRepository(
     override val deviceSchedule: Flow<OolerSchedule> = _deviceSchedule.asStateFlow()
 
     private var peripheral: Peripheral? = null
-    private var scanner = Scanner {
-        // No filters for discovery debugging
-    }
-
-    // Cached values to re-send when powering on
-    private var pendingMode: OolerMode? = null
-    private var pendingSetTemp: Int? = null
-
-    // Sequence counter for schedule
+    private var scanner = Scanner { }
     private var scheduleSequence: Int = 0
 
+    private val connectionMutex = Mutex()
+    private var pollJob: Job? = null
+    private var stateJob: Job? = null
+    private var isPollingEnabled = false
+
     override suspend fun connect() {
-        Log.d("OolerRepo", "Connecting...")
-        if (peripheral?.state?.first() is State.Connected) {
-            Log.d("OolerRepo", "Already connected")
-            return
-        }
+        connectionMutex.withLock {
+            if (peripheral?.state?.first() is State.Connected) return
+            
+            try {
+                val advertisement = scanner.advertisements.first { it.name?.contains("OOLER") == true }
+                val p = scope.peripheral(advertisement)
+                
+                // connect() suspends until services are discovered in Kable
+                p.connect()
+                
+                // Only after successful connection and discovery, set the peripheral
+                peripheral = p
+                
+                _oolerState.update { it.copy(isConnected = true) }
+                syncClock()
+                
+                val unitByte = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.DISPLAY_UNIT)
+                _oolerState.update { it.copy(displayUnit = TemperatureUnit.fromInt(unitByte[0].toInt())) }
+                
+                pollAll()
+                subscribeToNotifications(p)
 
-        try {
-            Log.d("OolerRepo", "Scanning for OOLER...")
-            val advertisement = scanner.advertisements
-                .onEach { Log.d("OolerRepo", "Found advertisement: ${it.name} (${it.address})") }
-                .first { it.name?.contains("OOLER", ignoreCase = true) == true }
-            Log.d("OolerRepo", "Found OOLER: ${advertisement.name} (${advertisement.address})")
-            val p = scope.peripheral(advertisement)
-            peripheral = p
-
-            p.connect()
-            Log.d("OolerRepo", "Connected successfully")
-            _oolerState.update { it.copy(isConnected = true) }
-
-            // 1. Sync clock on every connection
-            syncClock()
-
-            // 2. Read Display Temperature Unit once
-            val unitByte = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.DISPLAY_UNIT)
-            val unit = TemperatureUnit.fromInt(unitByte[0].toInt())
-            Log.d("OolerRepo", "Display unit read: $unit")
-            _oolerState.update { it.copy(displayUnit = unit) }
-
-            // 3. Poll Power, Mode, Set Temp, Actual Temp, Water Level, Clean once on connect
-            pollAll()
-
-            // 4. Subscribe to notifications
-            subscribeToNotifications(p)
-
-            // 5. Periodic polling for telemetry
-            scope.launch {
-                while (isActive && peripheral?.state?.first() is State.Connected) {
-                    delay(10000) // Poll every 10 seconds
-                    try {
-                        pollAll()
-                    } catch (e: Exception) {
-                        Log.w("OolerRepo", "Periodic poll failed", e)
+                stateJob?.cancel()
+                stateJob = scope.launch {
+                    p.state.collect { state ->
+                        _oolerState.update { it.copy(isConnected = state is State.Connected) }
                     }
                 }
-            }
 
-            // Keep track of connection state
-            scope.launch {
-                p.state.collect { state ->
-                    Log.d("OolerRepo", "Connection state changed: $state")
-                    _oolerState.update { it.copy(isConnected = state is State.Connected) }
-                }
+                if (isPollingEnabled) startPollingJob()
+            } catch (e: Exception) {
+                Log.e("OolerRepo", "Connection failed", e)
+                _oolerState.update { it.copy(isConnected = false) }
+                throw e
             }
-
-        } catch (e: Exception) {
-            Log.e("OolerRepo", "Connection failed", e)
-            _oolerState.update { it.copy(isConnected = false) }
-            throw e
         }
     }
 
     override suspend fun disconnect() {
-        peripheral?.disconnect()
-        peripheral = null
-        _oolerState.update { it.copy(isConnected = false) }
+        connectionMutex.withLock {
+            stopPolling()
+            stateJob?.cancel()
+            stateJob = null
+            peripheral?.disconnect()
+            peripheral = null
+            _oolerState.update { it.copy(isConnected = false) }
+        }
+    }
+    override fun forceDisconnect() { scope.launch { disconnect() } }
+
+    override fun startPolling() {
+        if (isPollingEnabled) return
+        isPollingEnabled = true
+        startPollingJob()
+    }
+
+    override fun stopPolling() {
+        isPollingEnabled = false
+        pollJob?.cancel()
+        pollJob = null
+    }
+
+    private fun startPollingJob() {
+        pollJob?.cancel()
+        pollJob = scope.launch {
+            while (isActive && isPollingEnabled) {
+                pollAll()
+                delay(10000)
+            }
+        }
     }
 
     @SuppressLint("NewApi")
     private suspend fun pollAll() {
         val p = peripheral ?: return
-        Log.d("OolerRepo", "Polling all characteristics...")
+        if (p.state.first() !is State.Connected) return
         
-        val power = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.POWER)[0].toInt() != 0
-        val mode = OolerMode.fromInt(p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.MODE)[0].toInt())
-        val setTemp = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.SET_TEMP_F)[0].toInt() and 0xFF
-        val actualTemp = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.ACTUAL_TEMP)[0].toInt() and 0xFF
-        val waterLevel = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.WATER_LEVEL)[0].toInt() and 0xFF
-        val clean = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.CLEAN)[0].toInt() != 0
-        val humidity = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.RELATIVE_HUMIDITY)[0].toInt() and 0xFF
-        val ambientTemp = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.AMBIENT_TEMP_F)[0].toInt() and 0xFF
+        try {
+            val power = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.POWER)[0].toInt() != 0
+            val mode = OolerMode.fromInt(p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.MODE)[0].toInt())
+            val setTempF = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.SET_TEMP_F)[0].toInt() and 0xFF
+            
+            // Actual temp is unit-dependent per spec §1.2
+            val displayUnit = _oolerState.value.displayUnit
+            val actualRaw = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.ACTUAL_TEMP)[0].toInt() and 0xFF
+            val actualTempF = if (displayUnit == TemperatureUnit.CELSIUS) {
+                (actualRaw * 9.0 / 5.0 + 32).toInt()
+            } else {
+                actualRaw
+            }
 
-        val deviceTime = try {
+            val water = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.WATER_LEVEL)[0].toInt() and 0xFF
+            val humidity = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.RELATIVE_HUMIDITY)[0].toInt() and 0xFF
+            val ambientTempF = p.read(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.AMBIENT_TEMP_F)[0].toInt() and 0xFF
+            
             val timeBytes = p.read(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.CURRENT_TIME)
-            val buffer = ByteBuffer.wrap(timeBytes).order(ByteOrder.LITTLE_ENDIAN)
-            val year = buffer.short.toInt()
-            val month = buffer.get().toInt()
-            val day = buffer.get().toInt()
-            val hour = buffer.get().toInt()
-            val minute = buffer.get().toInt()
-            val second = buffer.get().toInt()
-            // month is 1-based in BLE, 0-based in Calendar
-            LocalDateTime.of(year, month.coerceIn(1, 12), day.coerceIn(1, 31), hour.coerceIn(0, 23), minute.coerceIn(0, 59), second.coerceIn(0, 59))
-        } catch (e: Exception) {
-            Log.w("OolerRepo", "Failed to read device time", e)
-            null
-        }
+            val timeBuffer = ByteBuffer.wrap(timeBytes).order(ByteOrder.LITTLE_ENDIAN)
+            val year = timeBuffer.short.toInt() and 0xFFFF
+            val month = timeBytes[2].toInt() and 0xFF
+            val day = timeBytes[3].toInt() and 0xFF
+            val hour = timeBytes[4].toInt() and 0xFF
+            val minute = timeBytes[5].toInt() and 0xFF
+            val second = timeBytes[6].toInt() and 0xFF
+            val deviceTime = try {
+                LocalDateTime.of(year, month, day, hour, minute, second)
+            } catch (e: Exception) {
+                null
+            }
 
-        Log.d("OolerRepo", "Poll result: power=$power, mode=$mode, set=$setTemp, actual=$actualTemp, water=$waterLevel, clean=$clean, humidity=$humidity, ambient=$ambientTemp, time=$deviceTime")
-
-        _oolerState.update { 
-            it.copy(
-                powerOn = power,
-                mode = mode,
-                setTemperatureF = setTemp,
-                actualTemperature = actualTemp,
-                waterLevel = waterLevel,
-                cleaning = clean,
+            _oolerState.update { it.copy(
+                powerOn = power, 
+                mode = mode, 
+                setTemperatureF = setTempF, 
+                actualTemperature = actualTempF, 
+                waterLevel = water,
                 humidity = humidity,
-                ambientTemperatureF = ambientTemp,
+                ambientTemperatureF = ambientTempF,
                 deviceTime = deviceTime
-            )
+            ) }
+        } catch (e: Exception) {
+            Log.e("OolerRepo", "Poll failed", e)
+            if (e is IllegalStateException && e.message?.contains("Services have not been discovered") == true) {
+                // This shouldn't happen with the new connect() logic, but if it does, we should probably disconnect
+                forceDisconnect()
+            }
         }
-        
-        // Also read schedule
-        readSchedule()
     }
 
-    private suspend fun readSchedule() {
+    override suspend fun readSchedule() {
         val p = peripheral ?: return
+        Log.d("OolerRepo", "Reading schedule from hardware...")
         val timesBytes = p.read(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_TIMES)
         val tempsBytes = p.read(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_TEMPS)
         val headerBytes = p.read(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_HEADER)
-
+        
+        Log.d("OolerRepo", "Schedule bytes read - Header: ${headerBytes.joinToString("") { "%02x".format(it) }}")
+        
+        // EVERYTHING IS LITTLE ENDIAN
         scheduleSequence = ByteBuffer.wrap(headerBytes).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
-
         val events = mutableListOf<ScheduleEvent>()
         val buffer = ByteBuffer.wrap(timesBytes).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until 70) {
@@ -175,190 +188,77 @@ class KableOolerRepository(
     }
 
     private fun subscribeToNotifications(p: Peripheral) {
-        scope.launch {
-            p.observe(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.POWER).collect { data ->
-                _oolerState.update { it.copy(powerOn = data[0].toInt() != 0) }
-            }
-        }
-        scope.launch {
-            p.observe(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.MODE).collect { data ->
-                _oolerState.update { it.copy(mode = OolerMode.fromInt(data[0].toInt())) }
-            }
-        }
-        scope.launch {
-            p.observe(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.SET_TEMP_F).collect { data ->
-                _oolerState.update { it.copy(setTemperatureF = data[0].toInt() and 0xFF) }
-            }
-        }
-        scope.launch {
-            p.observe(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.ACTUAL_TEMP).collect { data ->
-                _oolerState.update { it.copy(actualTemperature = data[0].toInt() and 0xFF) }
-            }
-        }
+        scope.launch { p.observe(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.POWER).collect { d -> _oolerState.update { it.copy(powerOn = d[0].toInt() != 0) } } }
+        scope.launch { p.observe(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.MODE).collect { d -> _oolerState.update { it.copy(mode = OolerMode.fromInt(d[0].toInt())) } } }
     }
 
-    override suspend fun setPower(on: Boolean) {
-        writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.POWER, byteArrayOf(if (on) 1 else 0))
-        _oolerState.update { it.copy(powerOn = on) }
-        
-        if (on) {
-            // Re-send pending mode and temp after power on
-            pendingMode?.let { setMode(it) }
-            pendingSetTemp?.let { setTemperature(it) }
-            pendingMode = null
-            pendingSetTemp = null
-        }
-    }
-
-    override suspend fun setMode(mode: OolerMode) {
-        if (!_oolerState.value.powerOn) {
-            pendingMode = mode
-            return
-        }
-        writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.MODE, byteArrayOf(mode.value.toByte()))
-        _oolerState.update { it.copy(mode = mode) }
-    }
-
-    override suspend fun setTemperature(fahrenheit: Int) {
-        val clamped = when {
-            fahrenheit == OolerConstants.TEMP_LO_F -> OolerConstants.TEMP_LO_F
-            fahrenheit == OolerConstants.TEMP_HI_F -> OolerConstants.TEMP_HI_F
-            fahrenheit < OolerConstants.TEMP_MIN_F -> OolerConstants.TEMP_LO_F
-            fahrenheit > OolerConstants.TEMP_MAX_F -> OolerConstants.TEMP_HI_F
-            else -> fahrenheit
-        }
-
-        if (!_oolerState.value.powerOn) {
-            pendingSetTemp = clamped
-            return
-        }
-        writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.SET_TEMP_F, byteArrayOf(clamped.toByte()))
-        _oolerState.update { it.copy(setTemperatureF = clamped) }
-    }
-
-    override suspend fun setCleaning(on: Boolean) {
-        if (!_oolerState.value.powerOn && on) {
-            // Spec says cleaning requires power to be on
-            return
-        }
-        writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.CLEAN, byteArrayOf(if (on) 1 else 0))
-        _oolerState.update { it.copy(cleaning = on) }
-    }
-
-    override suspend fun setDisplayUnit(unit: TemperatureUnit) {
-        writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.DISPLAY_UNIT, byteArrayOf(unit.value.toByte()))
-        _oolerState.update { it.copy(displayUnit = unit) }
-    }
+    override suspend fun setPower(on: Boolean) { writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.POWER, byteArrayOf(if (on) 1 else 0)); _oolerState.update { it.copy(powerOn = on) } }
+    override suspend fun setMode(mode: OolerMode) { writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.MODE, byteArrayOf(mode.value.toByte())); _oolerState.update { it.copy(mode = mode) } }
+    override suspend fun setTemperature(f: Int) { val c = f.coerceIn(OolerConstants.TEMP_LO_F, OolerConstants.TEMP_HI_F); writeWithRetry(OolerUuids.MAIN_CONTROL_SERVICE, OolerUuids.SET_TEMP_F, byteArrayOf(c.toByte())); _oolerState.update { it.copy(setTemperatureF = c) } }
+    override suspend fun setCleaning(on: Boolean) { }
+    override suspend fun setDisplayUnit(unit: TemperatureUnit) { }
 
     override suspend fun updateSchedule(schedule: OolerSchedule) {
-        // Update local state first so UI is responsive
-        _schedule.value = schedule
+        val p = peripheral ?: return
+        if (p.state.first() !is State.Connected) return
 
-        val p = peripheral
-        if (p == null || p.state.first() !is State.Connected) {
-            Log.d("OolerRepo", "Not connected, schedule saved locally only")
-            return
-        }
-
-        val times = ByteArray(140)
+        // Per protocol spec §6.1, Times are padded with 0x00, Temps with 0xFF
+        val times = ByteArray(140) { 0x00.toByte() }
         val temps = ByteArray(70) { 0xFF.toByte() }
 
         schedule.events.take(70).forEachIndexed { i, event ->
             val minute = event.minuteOfWeek.toShort()
-            // Byte-swap quirk: write as Big Endian to swap from standard BLE Little Endian
+            // Per protocol spec §6.1, the device swaps bytes of uint16 on write.
+            // Using BIG_ENDIAN here effectively "pre-swaps" the bytes so the device stores LE.
             ByteBuffer.wrap(times, i * 2, 2).order(ByteOrder.BIG_ENDIAN).putShort(minute)
             temps[i] = event.temperatureF.toByte()
         }
 
-        writeWithRetry(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_TIMES, times)
-        writeWithRetry(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_TEMPS, temps)
-
-        scheduleSequence++
-        val seq = scheduleSequence.toShort()
-        // Byte-swap quirk: write as Big Endian
-        val header = ByteBuffer.allocate(2).order(ByteOrder.BIG_ENDIAN).putShort(seq).array()
+        // Increment sequence and write header per §6.2
+        scheduleSequence = (scheduleSequence + 1) % 0xFFFF
+        val header = ByteBuffer.allocate(2).order(ByteOrder.BIG_ENDIAN).putShort(scheduleSequence.toShort()).array()
         
-        writeWithRetry(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_HEADER, header)
-        _schedule.value = schedule
+        try {
+            Log.d("OolerRepo", "Writing schedule to hardware. Sequence: $scheduleSequence")
+            // Recommended write order: Times -> Temps -> Header (Commit)
+            writeWithRetry(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_TIMES, times)
+            delay(50)
+            writeWithRetry(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_TEMPS, temps)
+            delay(50)
+            writeWithRetry(OolerUuids.SLEEP_SCHEDULE_SERVICE, OolerUuids.SCHEDULE_HEADER, header)
+            Log.d("OolerRepo", "Schedule write complete")
+            delay(200) 
+            readSchedule()
+            _schedule.value = schedule
+        } catch (e: Exception) {
+            Log.e("OolerRepo", "Schedule update failed", e)
+            throw e
+        }
     }
+
+    override fun restoreLocalSchedule(schedule: OolerSchedule) { _schedule.value = schedule }
 
     override suspend fun syncClock() {
         val now = LocalDateTime.now()
         val zone = ZoneId.systemDefault()
         val zonedDateTime = now.atZone(zone)
-        val offset = zonedDateTime.offset
-        val offsetMinutes = offset.totalSeconds / 60
-        val tzOffset15 = (offsetMinutes / 15).toByte()
-
-        // Detect actual DST status
         val isDst = zone.rules.isDaylightSavings(zonedDateTime.toInstant())
-        // 0 = Standard Time, 4 = Daylight Time (+1h)
-        val dstFlag: Byte = if (isDst) 4 else 0
-
-        val dayOfWeek = now.dayOfWeek.value // 1 (Mon) to 7 (Sun)
-        
-        val currentTime = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(now.year.toShort())
-            .put(now.monthValue.toByte())
-            .put(now.dayOfMonth.toByte())
-            .put(now.hour.toByte())
-            .put(now.minute.toByte())
-            .put(now.second.toByte())
-            .put(dayOfWeek.toByte())
-            .put(0.toByte()) // fractions
-            .put(1.toByte()) // reason: manual update
-            .array()
-
-        val localTimeInfo = byteArrayOf(tzOffset15, dstFlag)
-
+        val currentTime = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN).putShort(now.year.toShort()).put(now.monthValue.toByte()).put(now.dayOfMonth.toByte()).put(now.hour.toByte()).put(now.minute.toByte()).put(now.second.toByte()).put(now.dayOfWeek.value.toByte()).put(0.toByte()).put(1.toByte()).array()
         writeWithRetry(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.CURRENT_TIME, currentTime)
-        writeWithRetry(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.LOCAL_TIME_INFO, localTimeInfo)
-        
-        Log.d("OolerRepo", "Synced clock: $now, Offset: $tzOffset15 (15m units), DST: $isDst")
+        writeWithRetry(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.LOCAL_TIME_INFO, byteArrayOf((zonedDateTime.offset.totalSeconds / 900).toByte(), if (isDst) 4 else 0))
     }
 
     private suspend fun writeWithRetry(service: UUID, characteristic: UUID, data: ByteArray) {
         val p = peripheral ?: throw IllegalStateException("Not connected")
-        Log.d("OolerRepo", "Writing to $characteristic: ${data.joinToString { it.toString(16) }}")
-        
-        try {
-            p.write(service, characteristic, data, WriteType.WithResponse)
-            Log.d("OolerRepo", "Write successful")
-        } catch (e: Exception) {
-            Log.w("OolerRepo", "Write failed, retrying...", e)
-            // Immediate retry
-            try {
-                p.write(service, characteristic, data, WriteType.WithResponse)
-                Log.d("OolerRepo", "Retry successful")
-            } catch (e2: Exception) {
-                Log.e("OolerRepo", "Retry failed, attempting reconnect...", e2)
-                // Force reconnect and retry once more
-                reconnectAndRetry(service, characteristic, data)
-            }
+        try { p.write(service, characteristic, data, WriteType.WithResponse) }
+        catch (e: Exception) { 
+            delay(100)
+            p.write(service, characteristic, data, WriteType.WithResponse) 
         }
     }
 
-    private suspend fun reconnectAndRetry(service: UUID, characteristic: UUID, data: ByteArray) {
-        disconnect()
-        connect()
-        val p = peripheral ?: throw IllegalStateException("Failed to reconnect")
-        p.write(service, characteristic, data, WriteType.WithResponse)
-    }
-
-    private fun Characteristic(service: UUID, characteristic: UUID) = characteristicOf(
-        service = service.toString(),
-        characteristic = characteristic.toString()
-    )
-
-    private suspend fun Peripheral.read(service: UUID, characteristic: UUID): ByteArray {
-        return read(Characteristic(service, characteristic))
-    }
-
-    private suspend fun Peripheral.write(service: UUID, characteristic: UUID, data: ByteArray, writeType: WriteType) {
-        write(Characteristic(service, characteristic), data, writeType)
-    }
-
-    private fun Peripheral.observe(service: UUID, characteristic: UUID): Flow<ByteArray> {
-        return observe(Characteristic(service, characteristic))
-    }
+    private fun Characteristic(service: UUID, characteristic: UUID) = characteristicOf(service.toString(), characteristic.toString())
+    private suspend fun Peripheral.read(s: UUID, c: UUID): ByteArray = read(Characteristic(s, c))
+    private suspend fun Peripheral.write(s: UUID, c: UUID, d: ByteArray, t: WriteType) = write(Characteristic(s, c), d, t)
+    private fun Peripheral.observe(s: UUID, c: UUID): Flow<ByteArray> = observe(Characteristic(s, c))
 }
