@@ -245,7 +245,32 @@ class KableOolerRepository(
         val isDst = zone.rules.isDaylightSavings(zonedDateTime.toInstant())
         val currentTime = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN).putShort(now.year.toShort()).put(now.monthValue.toByte()).put(now.dayOfMonth.toByte()).put(now.hour.toByte()).put(now.minute.toByte()).put(now.second.toByte()).put(now.dayOfWeek.value.toByte()).put(0.toByte()).put(1.toByte()).array()
         writeWithRetry(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.CURRENT_TIME, currentTime)
-        writeWithRetry(OolerUuids.CURRENT_TIME_SERVICE, OolerUuids.LOCAL_TIME_INFO, byteArrayOf((zonedDateTime.offset.totalSeconds / 900).toByte(), if (isDst) 4 else 0))
+        writeWithRetry(
+            OolerUuids.CURRENT_TIME_SERVICE,
+            OolerUuids.LOCAL_TIME_INFO,
+            encodeLocalTimeInfo(zonedDateTime.offset.totalSeconds, isDst)
+        )
+    }
+
+    internal companion object {
+        /**
+         * Encodes the 2-byte Local Time Information payload (0x2A0F): [timeZone, dstOffset].
+         *
+         * `totalOffsetSeconds` is the *current*, DST-inclusive UTC offset (e.g. what
+         * ZoneOffset.totalSeconds reports for PDT). The device expects the Time Zone byte
+         * to carry the STANDARD-time offset only, with the DST Offset byte layered on top
+         * of it separately -- so we must subtract the DST delta back out here. Failing to
+         * do so double-counts DST and leaves the device's onboard clock an hour off for as
+         * long as DST is in effect, which in turn makes any autonomous sleep schedule fire
+         * an hour early or late. See protocol spec §5.2.
+         */
+        internal fun encodeLocalTimeInfo(totalOffsetSeconds: Int, isDst: Boolean): ByteArray {
+            val dstOffsetSeconds = if (isDst) 3600 else 0
+            val standardOffsetSeconds = totalOffsetSeconds - dstOffsetSeconds
+            val timeZoneByte = (standardOffsetSeconds / 900).toByte()
+            val dstByte: Byte = if (isDst) 4 else 0
+            return byteArrayOf(timeZoneByte, dstByte)
+        }
     }
 
     private suspend fun writeWithRetry(service: UUID, characteristic: UUID, data: ByteArray) {
