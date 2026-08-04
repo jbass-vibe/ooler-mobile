@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- The white circle -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,54m-44,0a44,44 0,1 1,88 0a44,44 0,1 1,-88 0" />
+    <!-- The black "0" -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M54,34c-8,0 -12,6 -12,20s4,20 12,20s12,-6 12,-20S62,34 54,34zM54,66c-4,0 -6,-4 -6,-12s2,-12 6,-12s6,4 6,12S58,66 54,66z" />
+</vector>
