@@ -55,6 +55,13 @@ fun ScheduleScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     
+    DisposableEffect(Unit) {
+        viewModel.startPolling()
+        onDispose {
+            viewModel.stopPolling()
+        }
+    }
+
     var localRows by remember { mutableStateOf(draftRows) }
     
     LaunchedEffect(draftRows) {
@@ -93,6 +100,9 @@ fun ScheduleScreen(
             TopAppBar(
                 title = { Text("Weekly Schedule", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = { viewModel.runSniffer() }) {
+                        Icon(Icons.Default.Search, contentDescription = "Run Protocol Sniffer")
+                    }
                     IconButton(onClick = { viewModel.clearDatabase() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Hard Reset Database")
                     }

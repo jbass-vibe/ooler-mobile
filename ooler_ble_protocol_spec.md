@@ -186,7 +186,8 @@ This is the most complex part of the protocol. The device stores **one** active 
 
 ### 6.1 Encoding rules
 
-- **Minute-of-week**: `0` = Monday 00:00, up to `10079` = Sunday 23:59. Values slightly above 10079 are used for a Sunday-night schedule that spills into Monday morning (e.g. `10080` = "Monday 00:00," treated as the wrap-around continuation of Sunday night).
+- **Minute-of-week**: `0` = Sunday 00:00, up to `10079` = Saturday 23:59.
+- **The Day Index Paradox**: Note that the device uses two different day-of-week mappings. The **Current Time Service** (§5.1) follows the Bluetooth CTS standard (Monday=1, Sunday=7), but the **Sleep Schedule Service** follows a Sunday-first mapping (Sunday=0, Saturday=6).
 - **Temperature byte**, per event:
   - `0x00` = OFF (device powers down at this event)
   - `1`–`120` = target Fahrenheit temperature
@@ -225,13 +226,13 @@ Warm wake is encoded as **three consecutive events**, not a separate flag on the
 
 Goal: every night, turn on at 22:00 to 68°F, turn off at 06:00, all 7 days, no warm wake.
 
-For a Monday-night program (`day=0`), bedtime 22:00 = minute `0*1440 + 22*60 = 1320`; wake 06:00 is *earlier in clock time than bedtime*, so it's treated as falling on the **next calendar day**: `1320 + (1440 - 1320) ... ` more precisely, `off_time` uses the "next calendar day" rule below and lands at minute `1440 + 360 = 1800` (Tuesday 06:00).
+For a Sunday-night program (`day=0`), bedtime 22:00 = minute `0*1440 + 22*60 = 1320`; wake 06:00 is *earlier in clock time than bedtime*, so it's treated as falling on the **next calendar day**: lands at minute `1440 + 360 = 1800` (Monday 06:00).
 
 ```
-event[0]: minute=1320 (Mon 22:00), temp=68     # bedtime, cool to 68°F
-event[1]: minute=1800 (Tue 06:00), temp=0x00   # OFF / wake
+event[0]: minute=1320 (Sun 22:00), temp=68     # bedtime, cool to 68°F
+event[1]: minute=1800 (Mon 06:00), temp=0x00   # OFF / wake
 ```
-Repeating this pattern for all 7 nights (with each night's OFF landing on the following calendar day) produces 14 events total — well under the 70-event cap. A uniform 7-night schedule with warm wake instead uses 7 × 3 = 21 events for the wake portion plus 7 for bedtime = 28 events.
+Repeating this pattern for all 7 nights produces 14 events total.
 
 ### 6.5 Example — read and decode (Python)
 
@@ -267,7 +268,7 @@ def encode(events):
         temps[i] = temp
     return bytes(times), bytes(temps)
 
-events = [(1320, 68), (1800, 0x00)]   # Mon 22:00 -> 68F, Tue 06:00 -> OFF
+events = [(1320, 68), (1800, 0x00)]   # Sun 22:00 -> 68F, Mon 06:00 -> OFF
 times_bytes, temps_bytes = encode(events)
 
 new_seq = seq + 1

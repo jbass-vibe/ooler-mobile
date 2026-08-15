@@ -71,12 +71,32 @@ class OolerViewModel @Inject constructor(
         _hasPendingChanges.value = true
     }
 
-    fun togglePower() { viewModelScope.launch { repository.setPower(!oolerState.value.powerOn) } }
-    fun setMode(mode: OolerMode) { viewModelScope.launch { repository.setMode(mode) } }
+    fun togglePower() {
+        viewModelScope.launch {
+            try {
+                repository.setPower(!oolerState.value.powerOn)
+            } catch (e: Exception) {
+                _errorMessage.emit("Device not connected")
+            }
+        }
+    }
+    fun setMode(mode: OolerMode) {
+        viewModelScope.launch {
+            try {
+                repository.setMode(mode)
+            } catch (e: Exception) {
+                _errorMessage.emit("Device not connected")
+            }
+        }
+    }
     fun setTemperature(temp: Int) {
         viewModelScope.launch {
-            val fValue = if (oolerState.value.displayUnit == TemperatureUnit.CELSIUS) celsiusToFahrenheit(temp) else temp
-            repository.setTemperature(fValue)
+            try {
+                val fValue = if (oolerState.value.displayUnit == TemperatureUnit.CELSIUS) celsiusToFahrenheit(temp) else temp
+                repository.setTemperature(fValue)
+            } catch (e: Exception) {
+                _errorMessage.emit("Device not connected")
+            }
         }
     }
 
@@ -100,6 +120,16 @@ class OolerViewModel @Inject constructor(
                 _errorMessage.emit("Failed to read device schedule")
             } finally {
                 _isSyncing.value = false
+            }
+        }
+    }
+
+    fun runSniffer() {
+        viewModelScope.launch {
+            try {
+                repository.runSniffer()
+            } catch (e: Exception) {
+                _errorMessage.emit("Sniffer failed")
             }
         }
     }
@@ -138,8 +168,15 @@ class OolerViewModel @Inject constructor(
 
     private fun convertRowsToEvents(rows: List<ScheduleRow>): List<ScheduleEvent> {
         val events = mutableListOf<ScheduleEvent>()
-        rows.filter { it.enabled }.forEach { row ->
-            if (row.steps.isEmpty()) return@forEach
+        Log.d("OolerViewModel", "Converting ${rows.size} UI rows to hardware events...")
+        
+        rows.filter { it.enabled }.forEachIndexed { rowIndex, row ->
+            Log.d("OolerViewModel", "  Row $rowIndex (Days: ${row.days.joinToString()}):")
+            if (row.steps.isEmpty()) {
+                Log.d("OolerViewModel", "    No steps in row.")
+                return@forEachIndexed
+            }
+            
             row.days.forEach { dayIndex ->
                 var currentDay = dayIndex
                 val steps = row.steps
@@ -147,12 +184,21 @@ class OolerViewModel @Inject constructor(
                     if (i > 0 && steps[i].timeMinutes < steps[i-1].timeMinutes) {
                         currentDay = (currentDay + 1) % 7
                     }
-                    val minuteOfWeek = (currentDay * 1440 + step.timeMinutes) % OolerConstants.MINUTES_IN_WEEK
-                    events.add(ScheduleEvent(minuteOfWeek, step.temperatureF))
+                    // Map UI (Mon=0...Sun=6) to Hardware Schedule (Sun=0, Mon=1...Sat=6)
+                    val oolerDay = (currentDay + 1) % 7
+                    val minuteOfWeek = (oolerDay * 1440 + step.timeMinutes) % OolerConstants.MINUTES_IN_WEEK
+                    val event = ScheduleEvent(minuteOfWeek, step.temperatureF)
+                    events.add(event)
+                    
+                    val dayName = listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")[oolerDay]
+                    val timeStr = String.format(java.util.Locale.US, "%02d:%02d", step.timeMinutes / 60, step.timeMinutes % 60)
+                    Log.d("OolerViewModel", "    Event: UI Day $dayIndex -> Calculated $dayName ($oolerDay) $timeStr, Temp: ${step.temperatureF}, MinOfWeek: $minuteOfWeek")
                 }
             }
         }
-        return events.distinctBy { it.minuteOfWeek }.sortedBy { it.minuteOfWeek }
+        val result = events.distinctBy { it.minuteOfWeek }.sortedBy { it.minuteOfWeek }
+        Log.d("OolerViewModel", "Conversion complete. Total unique events: ${result.size}")
+        return result
     }
 
     fun loadSavedSchedule() {
