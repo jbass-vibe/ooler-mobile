@@ -11,6 +11,7 @@ interface OolerRepository {
     suspend fun disconnect()
     fun forceDisconnect() // Non-suspending for lifecycle cleanup
 
+    suspend fun pollAll()
     fun startPolling()
     fun stopPolling()
 
@@ -22,6 +23,7 @@ interface OolerRepository {
 
     suspend fun updateSchedule(schedule: OolerSchedule)
     suspend fun readSchedule()
+    suspend fun runSniffer()
     fun restoreLocalSchedule(schedule: OolerSchedule)
     suspend fun syncClock()
 }

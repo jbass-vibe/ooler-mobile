@@ -68,6 +68,8 @@ class MockOolerRepository : OolerRepository {
     override fun startPolling() {}
     override fun stopPolling() {}
 
+    override suspend fun pollAll() {}
+
     override suspend fun setPower(on: Boolean) {
         _oolerState.update { it.copy(powerOn = on) }
     }
@@ -99,6 +101,10 @@ class MockOolerRepository : OolerRepository {
     }
 
     override suspend fun readSchedule() {
+        // No-op in mock
+    }
+
+    override suspend fun runSniffer() {
         // No-op in mock
     }
 
